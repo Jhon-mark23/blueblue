@@ -1,6 +1,6 @@
 #!/bin/bash
 # =========================================
-# XRAY MULTI-PROTOCOL USER MANAGEMENT
+# ADD VLESS USER - Simplified
 # =========================================
 # Colors
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
@@ -9,158 +9,142 @@ BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
 # Root check
 [ "${EUID}" -ne 0 ] && { echo -e "${RED}Run as root!${NC}"; exit 1; }
 
-# Load domain
-source /var/lib/scrz-prem/ipvps.conf 2>/dev/null
+# Get IP
+MYIP=$(wget -qO- ipv4.icanhazip.com)
+echo "Checking VPS..."
+
+# Load domain/IP
+source /var/lib/ipvps.conf 2>/dev/null
 if [[ "$IP" = "" ]]; then
-    domain=$(cat /etc/xray/domain 2>/dev/null || echo "")
-    [ -z "$domain" ] && domain=$IP
+    domain=$(cat /etc/xray/domain 2>/dev/null || echo "$MYIP")
 else
     domain=$IP
 fi
+[ -z "$domain" ] && domain="$MYIP"
 
-# Ports (fallback if log-install.txt missing)
-tls_port=$(grep -oP '(?<=XRAY.*TLS : )\d+' /root/log-install.txt 2>/dev/null | head -1)
-[ -z "$tls_port" ] && tls_port=443
-ntls_port=$(grep -oP '(?<=XRAY.*None TLS : )\d+' /root/log-install.txt 2>/dev/null | head -1)
-[ -z "$ntls_port" ] && ntls_port=80
+# Get ports from install log
+tls="$(grep -w "Vless WS TLS" ~/log-install.txt 2>/dev/null | cut -d: -f2 | sed 's/ //g')"
+none="$(grep -w "Vless WS none TLS" ~/log-install.txt 2>/dev/null | cut -d: -f2 | sed 's/ //g')"
+[ -z "$tls" ] && tls="443"
+[ -z "$none" ] && none="80"
 
-# Functions
-add_protocol() {
-    local proto="$1"       # vless / vmess / trojan / shadowsocks / socks
-    local marker="$2"      # placeholder in config (e.g. #vless)
-    local path_ws="$3"     # WebSocket path
-    local grpc_svc="$4"    # gRPC service name
-
+# Username input with duplicate check
+until [[ $user =~ ^[a-zA-Z0-9_]+$ && ${CLIENT_EXISTS} == '0' ]]; do
     clear
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}   ADD ${proto^^} USER${NC}"
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-
-    read -p "Username : " user
-    [ -z "$user" ] && { echo -e "${RED}Username empty!${NC}"; return 1; }
-    if grep -q "\"email\": \"$user\"" /etc/xray/config.json; then
-        echo -e "${RED}User already exists!${NC}"
-        return 1
+    echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+    echo -e "\E[44;1;39m        Add VLESS Account        \E[0m"
+    echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+    
+    read -rp "User: " -e user
+    CLIENT_EXISTS=$(grep -w "$user" /etc/xray/config.json | wc -l)
+    
+    if [[ ${CLIENT_EXISTS} == '1' ]]; then
+        clear
+        echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+        echo -e "\E[44;1;39m        Add VLESS Account        \E[0m"
+        echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+        echo ""
+        echo -e "${RED}A client with this name already exists!${NC}"
+        echo ""
+        echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+        read -n 1 -s -r -p "Press any key to continue..."
     fi
+done
 
-    local uuid="" password=""
-    if [[ "$proto" == "socks" ]]; then
-        read -p "Password : " password
-        [ -z "$password" ] && { echo -e "${RED}Password empty!${NC}"; return 1; }
-    elif [[ "$proto" == "shadowsocks" ]]; then
-        uuid=$(cat /proc/sys/kernel/random/uuid)
-        password="$uuid"
-        cipher="aes-128-gcm"
-    else
-        uuid=$(cat /proc/sys/kernel/random/uuid)
-    fi
+# Generate UUID and set expiry
+uuid=$(cat /proc/sys/kernel/random/uuid)
+read -p "Expired (days): " masaaktif
+exp=$(date -d "$masaaktif days" +"%Y-%m-%d")
 
-    read -p "Expired (days) : " days
-    ! [[ "$days" =~ ^[0-9]+$ ]] && { echo -e "${RED}Invalid days!${NC}"; return 1; }
-    exp=$(date -d "$days days" +"%Y-%m-%d")
+# Insert into Xray config (WebSocket + gRPC)
+sed -i '/#vless$/a\#& '"$user $exp"'\
+},{"id": "'""$uuid""'","email": "'""$user""'"' /etc/xray/config.json
 
-    # Build client entry
-    case $proto in
-        vless) client="{\"id\": \"$uuid\", \"email\": \"$user\"}" ;;
-        vmess) client="{\"id\": \"$uuid\", \"alterId\": 0, \"email\": \"$user\"}" ;;
-        trojan) client="{\"password\": \"$uuid\", \"email\": \"$user\"}" ;;
-        shadowsocks) client="{\"password\": \"$uuid\", \"method\": \"$cipher\", \"email\": \"$user\"}" ;;
-        socks) client="{\"user\": \"$user\", \"pass\": \"$password\"}" ;;
-    esac
+sed -i '/#vlessgrpc$/a\#& '"$user $exp"'\
+},{"id": "'""$uuid""'","email": "'""$user""'"' /etc/xray/config.json
 
-    # Insert into config
-    sed -i "/${marker}$/a\\${client}," /etc/xray/config.json
-    # Also insert into the corresponding gRPC marker if needed
-    if [[ "$proto" != "socks" ]]; then
-        local grpc_marker="${marker}grpc"
-        sed -i "/${grpc_marker}$/a\\${client}," /etc/xray/config.json
-    fi
+# Generate VLESS links
+vlesslink1="vless://${uuid}@${domain}:${tls}?path=/vless&security=tls&encryption=none&type=ws&host=${domain}&sni=${domain}&allowInsecure=1#${user}"
+vlesslink2="vless://${uuid}@${domain}:${none}?path=/vless&security=none&encryption=none&type=ws&host=${domain}#${user}"
+vlesslink3="vless://${uuid}@${domain}:${tls}?mode=gun&security=tls&encryption=none&type=grpc&serviceName=vless-grpc&sni=${domain}&allowInsecure=1#VLESS_GRPC_${user}"
 
-    systemctl restart xray
-    sleep 2
+# Restart Xray
+systemctl restart xray
+sleep 2
 
-    # Generate config file
-    mkdir -p /home/vps/public_html
-    local outfile="/home/vps/public_html/${proto}-${user}.txt"
-    cat > "$outfile" <<EOF
+# Create TXT config file for download
+mkdir -p /home/vps/public_html
+cat > /home/vps/public_html/vless-${user}.txt <<EOF
 ============================================================
-   XRAY ${proto^^} ACCOUNT
+              VLESS ACCOUNT
 ============================================================
-Username  : $user
-Domain    : $domain
-Protocol  : $proto
-UUID/Pass : ${uuid:-$password}
-TLS Port  : $tls_port
-NTLS Port : $ntls_port
-WS Path   : /${path_ws}
-gRPC Svc  : ${grpc_svc}
-Expired   : $exp
+Username        : ${user}
+Domain          : ${domain}
+Port TLS        : ${tls}
+Port none TLS   : ${none}
+UUID            : ${uuid}
+Encryption      : none
+Network         : ws / grpc
+WS Path         : /vless
+gRPC Service    : vless-grpc
+Expired         : ${exp}
+============================================================
+Link TLS (WS)   : ${vlesslink1}
+Link none TLS   : ${vlesslink2}
+Link gRPC       : ${vlesslink3}
 ============================================================
 EOF
 
-    clear
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}   ${proto^^} ACCOUNT CREATED${NC}"
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "Username  : ${GREEN}$user${NC}"
-    echo -e "Domain    : $domain"
-    echo -e "UUID/Pass : ${uuid:-$password}"
-    echo -e "Port TLS  : $tls_port"
-    echo -e "Path WS   : /${path_ws}"
-    echo -e "gRPC      : ${grpc_svc}"
-    echo -e "Expired   : $exp"
-    echo -e "Config file: http://${domain}:81/${proto}-${user}.txt"
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+# Create JSON config file
+cat > /home/vps/public_html/vless-${user}.json <<EOF
+{
+  "remarks": "VLESS ${user}",
+  "domain": "${domain}",
+  "protocol": "vless",
+  "uuid": "${uuid}",
+  "tls_port": ${tls},
+  "ntls_port": ${none},
+  "encryption": "none",
+  "network": "ws",
+  "ws_path": "/vless",
+  "grpc_service": "vless-grpc",
+  "expired": "${exp}",
+  "allow_insecure": true,
+  "link_tls_ws": "${vlesslink1}",
+  "link_ntls_ws": "${vlesslink2}",
+  "link_grpc": "${vlesslink3}"
 }
+EOF
 
-delete_user() {
-    read -p "Username to delete: " user
-    [ -z "$user" ] && { echo -e "${RED}Empty!${NC}"; return 1; }
-    sed -i "/\"email\": \"$user\"/d" /etc/xray/config.json
-    sed -i "/\"user\": \"$user\"/d" /etc/xray/config.json
-    # Remove trailing commas
-    sed -i ':a;N;$!ba;s/,\n\s*]/\n]/g' /etc/xray/config.json
-    rm -f /home/vps/public_html/*-${user}.txt
-    systemctl restart xray
-    echo -e "${GREEN}User $user deleted.${NC}"
-}
-
-list_users() {
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}   CURRENT XRAY USERS${NC}"
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    grep -o '"email": "[^"]*"\|"user": "[^"]*"' /etc/xray/config.json | while read line; do
-        name=$(echo "$line" | cut -d'"' -f4)
-        echo -e "  ${GREEN}•${NC} $name"
-    done
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-}
-
-# Menu
+# Display result
 clear
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BLUE}   XRAY MULTI-PROTOCOL MANAGER${NC}"
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e " 1. Add VLESS"
-echo -e " 2. Add VMess"
-echo -e " 3. Add Trojan"
-echo -e " 4. Add Shadowsocks"
-echo -e " 5. Add Socks"
-echo -e " 6. Delete User"
-echo -e " 7. List Users"
-echo -e " 8. Back to Main Menu"
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-read -p "Select [1-8]: " opt
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m" | tee -a /etc/log-create-vless.log
+echo -e "\E[44;1;39m          VLESS Account Created           \E[0m" | tee -a /etc/log-create-vless.log
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m" | tee -a /etc/log-create-vless.log
+echo -e " Remarks       : ${GREEN}${user}${NC}" | tee -a /etc/log-create-vless.log
+echo -e " Domain        : ${domain}" | tee -a /etc/log-create-vless.log
+echo -e " Port TLS      : ${tls}" | tee -a /etc/log-create-vless.log
+echo -e " Port none TLS : ${none}" | tee -a /etc/log-create-vless.log
+echo -e " UUID          : ${uuid}" | tee -a /etc/log-create-vless.log
+echo -e " Encryption    : none" | tee -a /etc/log-create-vless.log
+echo -e " Network       : ws / grpc" | tee -a /etc/log-create-vless.log
+echo -e " WS Path       : /vless" | tee -a /etc/log-create-vless.log
+echo -e " gRPC Service  : vless-grpc" | tee -a /etc/log-create-vless.log
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m" | tee -a /etc/log-create-vless.log
+echo -e " ${CYAN}Link TLS (WS):${NC}" | tee -a /etc/log-create-vless.log
+echo -e " ${vlesslink1}" | tee -a /etc/log-create-vless.log
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m" | tee -a /etc/log-create-vless.log
+echo -e " ${CYAN}Link none TLS:${NC}" | tee -a /etc/log-create-vless.log
+echo -e " ${vlesslink2}" | tee -a /etc/log-create-vless.log
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m" | tee -a /etc/log-create-vless.log
+echo -e " ${CYAN}Link gRPC:${NC}" | tee -a /etc/log-create-vless.log
+echo -e " ${vlesslink3}" | tee -a /etc/log-create-vless.log
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m" | tee -a /etc/log-create-vless.log
+echo -e " ${CYAN}Config TXT:${NC} http://${domain}:81/vless-${user}.txt" | tee -a /etc/log-create-vless.log
+echo -e " ${CYAN}Config JSON:${NC} http://${domain}:81/vless-${user}.json" | tee -a /etc/log-create-vless.log
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m" | tee -a /etc/log-create-vless.log
+echo -e " Expired On    : ${RED}${exp}${NC}" | tee -a /etc/log-create-vless.log
+echo -e "\033[0;34m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m" | tee -a /etc/log-create-vless.log
+echo "" | tee -a /etc/log-create-vless.log
 
-case $opt in
-    1) add_protocol "vless" "#vless" "vless" "vless-grpc" ;;
-    2) add_protocol "vmess" "#vmess" "vmess" "vmess-grpc" ;;
-    3) add_protocol "trojan" "#trojan" "trojan-ws" "trojan-grpc" ;;
-    4) add_protocol "shadowsocks" "#ss" "ss-ws" "ss-grpc" ;;
-    5) add_protocol "socks" "#socks" "socks-ws" "socks-grpc" ;;
-    6) delete_user ;;
-    7) list_users ;;
-    8) menu 2>/dev/null || echo "Main menu not found" ;;
-    *) echo -e "${RED}Invalid option${NC}" ;;
-esac
-read -n 1 -s -r -p "Press any key to continue..."
+read -n 1 -s -r -p "Press any key to back to menu"
