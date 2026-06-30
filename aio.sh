@@ -4,7 +4,7 @@
 # Repository: https://github.com/YOUR_USERNAME/YOUR_REPO
 # ============================================================
 set -e
-GITHUB_RAW="https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main"
+GITHUB_RAW="https://raw.githubusercontent.com/Jhon-mark23/blueblue/main"
 BACKUP_DIR="/root/ssh-vpn-backup-$(date +%Y%m%d_%H%M%S)"
 LOG_FILE="/var/log/marcscript-vpn-install.log"
 JSON_FILE="/etc/marcscript-vpn-config.json"
